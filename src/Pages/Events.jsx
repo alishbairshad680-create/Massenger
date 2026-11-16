@@ -1,5 +1,5 @@
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   CalendarDays,
   MapPin,
@@ -18,6 +18,13 @@ import {
   Check,
   AlertCircle,
 } from "lucide-react";
+
+import {
+  getEvents,
+  createEvent,
+  updateEvent,
+  deleteEvent as deleteEventAPI,
+} from "../services/api";
 
 export const initialEvents = [
   {
@@ -52,6 +59,27 @@ export const initialEvents = [
   },
 ];
 
+// Convert MongoDB event into the format used by the frontend
+const formatEvent = (event, existingEvent = {}) => {
+  const eventDate = String(event.date).slice(0, 10);
+
+  return {
+    id: event._id || event.id,
+    name: event.name,
+    date: eventDate,
+    venue: event.location || event.venue || "",
+    description: event.description || "",
+    registered: existingEvent.registered ?? event.registered ?? 0,
+    participantIds: existingEvent.participantIds || [],
+    status:
+      event.status === "completed"
+        ? "Completed"
+        : event.status === "cancelled"
+        ? "Cancelled"
+        : "Upcoming",
+  };
+};
+
 function Events({ events, setEvents, contacts, setContacts }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("All");
@@ -66,6 +94,9 @@ function Events({ events, setEvents, contacts, setContacts }) {
   const [selectedContactIds, setSelectedContactIds] = useState([]);
   const [registrationMessage, setRegistrationMessage] = useState("");
 
+  const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState("");
+
   const [form, setForm] = useState({
     name: "",
     date: "",
@@ -74,11 +105,55 @@ function Events({ events, setEvents, contacts, setContacts }) {
     registered: "0",
   });
 
-  const viewEvent = events.find((event) => event.id === viewEventId);
-  const registrationEvent = events.find(
-    (event) => event.id === registrationEventId
+  // LOAD EVENTS FROM MONGODB
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadEvents = async () => {
+      try {
+        setLoading(true);
+        setApiError("");
+
+        const response = await getEvents();
+
+        if (!response.success) {
+          throw new Error(response.message || "Unable to load events.");
+        }
+
+        if (isMounted) {
+          setEvents(
+            (response.events || []).map((event) => formatEvent(event))
+          );
+        }
+      } catch (error) {
+        console.error("Error loading events:", error);
+
+        if (isMounted) {
+          setApiError(error.message || "Unable to load events from database.");
+        }
+      } finally {
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    loadEvents();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [setEvents]);
+
+  const viewEvent = events.find(
+    (event) => String(event.id) === String(viewEventId)
   );
 
+  const registrationEvent = events.find(
+    (event) => String(event.id) === String(registrationEventId)
+  );
+
+  // RESET FORM
   const resetForm = () => {
     setForm({
       name: "",
@@ -87,14 +162,18 @@ function Events({ events, setEvents, contacts, setContacts }) {
       description: "",
       registered: "0",
     });
+
     setSelectedEvent(null);
   };
 
+  // OPEN CREATE MODAL
   const openCreateModal = () => {
     resetForm();
+    setApiError("");
     setShowModal(true);
   };
 
+  // OPEN EDIT MODAL
   const openEditModal = (event) => {
     setSelectedEvent(event);
 
@@ -103,70 +182,112 @@ function Events({ events, setEvents, contacts, setContacts }) {
       date: event.date,
       venue: event.venue,
       description: event.description,
-      registered: String(event.registered),
+      registered: String(event.registered || 0),
     });
 
+    setApiError("");
     setShowModal(true);
   };
 
-  const handleSubmit = (e) => {
+  // CREATE OR UPDATE EVENT IN MONGODB
+  const handleSubmit = async (e) => {
     e.preventDefault();
 
     if (!form.name.trim() || !form.date || !form.venue.trim()) {
       return;
     }
 
-    const today = new Date().toISOString().split("T")[0];
+    try {
+      setApiError("");
 
-    const updatedEvent = {
-      name: form.name.trim(),
-      date: form.date,
-      venue: form.venue.trim(),
-      description: form.description,
-      registered: Number(form.registered) || 0,
-      status: form.date < today ? "Completed" : "Upcoming",
-    };
+      const today = new Date().toISOString().split("T")[0];
 
-    if (selectedEvent) {
+      const eventData = {
+        name: form.name.trim(),
+        date: form.date,
+        location: form.venue.trim(),
+        description: form.description.trim(),
+        status: form.date < today ? "completed" : "upcoming",
+      };
+
+      if (selectedEvent) {
+        // UPDATE EXISTING EVENT
+        const response = await updateEvent(selectedEvent.id, eventData);
+
+        if (!response.success) {
+          throw new Error(response.message || "Failed to update event.");
+        }
+
+        const updatedEvent = formatEvent(
+          response.event,
+          selectedEvent
+        );
+
+        setEvents((previous) =>
+          previous.map((event) =>
+            String(event.id) === String(selectedEvent.id)
+              ? updatedEvent
+              : event
+          )
+        );
+      } else {
+        // CREATE NEW EVENT
+        const response = await createEvent(eventData);
+
+        if (!response.success) {
+          throw new Error(response.message || "Failed to create event.");
+        }
+
+        const newEvent = formatEvent(response.event);
+
+        setEvents((previous) => [newEvent, ...previous]);
+      }
+
+      setShowModal(false);
+      resetForm();
+    } catch (error) {
+      console.error("Error saving event:", error);
+      setApiError(error.message || "Unable to save event.");
+    }
+  };
+
+  // DELETE EVENT FROM MONGODB
+  const deleteEvent = async (id) => {
+    if (
+      !window.confirm("Are you sure you want to delete this event?")
+    ) {
+      return;
+    }
+
+    try {
+      setApiError("");
+
+      const response = await deleteEventAPI(id);
+
+      if (!response.success) {
+        throw new Error(response.message || "Failed to delete event.");
+      }
+
       setEvents((previous) =>
-        previous.map((event) =>
-          event.id === selectedEvent.id
-            ? { ...event, ...updatedEvent }
-            : event
+        previous.filter(
+          (event) => String(event.id) !== String(id)
         )
       );
-    } else {
-      setEvents((previous) => [
-        {
-          ...updatedEvent,
-          id: Date.now(),
-          participantIds: [],
-        },
-        ...previous,
-      ]);
-    }
 
-    setShowModal(false);
-    resetForm();
-  };
-
-  const deleteEvent = (id) => {
-    if (
-      window.confirm(
-        "Are you sure you want to delete this event?"
-      )
-    ) {
-      setEvents((previous) =>
-        previous.filter((event) => event.id !== id)
-      );
-
-      if (viewEventId === id) {
+      if (String(viewEventId) === String(id)) {
         setViewEventId(null);
       }
+
+      if (String(registrationEventId) === String(id)) {
+        setRegistrationEventId(null);
+      }
+    } catch (error) {
+      console.error("Error deleting event:", error);
+      setApiError(error.message || "Unable to delete event.");
     }
   };
 
-  // Search and filter events
+  // SEARCH AND FILTER EVENTS
   const filteredEvents = events.filter((event) => {
     const query = search.toLowerCase();
 
@@ -189,7 +310,7 @@ function Events({ events, setEvents, contacts, setContacts }) {
   ).length;
 
   const totalRegistrations = events.reduce(
-    (sum, event) => sum + event.registered,
+    (sum, event) => sum + (Number(event.registered) || 0),
     0
   );
 
@@ -207,9 +328,11 @@ function Events({ events, setEvents, contacts, setContacts }) {
   const statusStyle = (status) =>
     status === "Upcoming"
       ? "bg-blue-50 text-blue-700"
-      : "bg-green-50 text-green-700";
+      : status === "Completed"
+      ? "bg-green-50 text-green-700"
+      : "bg-red-50 text-red-700";
 
-  // Open participant registration
+  // OPEN PARTICIPANT REGISTRATION
   const openRegistration = (event) => {
     setRegistrationEventId(event.id);
     setSelectedContactIds([]);
@@ -217,7 +340,7 @@ function Events({ events, setEvents, contacts, setContacts }) {
     setRegistrationMessage("");
   };
 
-  // Select or deselect contact
+  // SELECT OR DESELECT CONTACT
   const toggleContact = (contactId) => {
     const alreadyRegistered =
       registrationEvent?.participantIds?.includes(contactId);
@@ -231,7 +354,9 @@ function Events({ events, setEvents, contacts, setContacts }) {
     );
   };
 
-  // Register selected contacts
+  // REGISTER SELECTED CONTACTS
+  // NOTE: This is currently local-only.
+  // Database registration support will be added separately.
   const handleRegistration = () => {
     if (!registrationEvent || selectedContactIds.length === 0) {
       setRegistrationMessage("Please select at least one contact.");
@@ -254,23 +379,23 @@ function Events({ events, setEvents, contacts, setContacts }) {
 
     const eventYear = registrationEvent.date.slice(0, 4);
 
-    // Update event registration list
+    // UPDATE EVENT REGISTRATION LIST LOCALLY
     setEvents((previous) =>
       previous.map((event) =>
-        event.id === registrationEvent.id
+        String(event.id) === String(registrationEvent.id)
           ? {
               ...event,
               participantIds: [
                 ...(event.participantIds || []),
                 ...newIds,
               ],
-              registered: event.registered + newIds.length,
+              registered: (Number(event.registered) || 0) + newIds.length,
             }
           : event
       )
     );
 
-    // Update permanent contacts and their attendance history
+    // UPDATE CONTACT ATTENDANCE HISTORY LOCALLY
     setContacts((previous) =>
       previous.map((contact) => {
         if (!newIds.includes(contact.id)) {
@@ -313,9 +438,9 @@ function Events({ events, setEvents, contacts, setContacts }) {
     const query = contactSearch.toLowerCase();
 
     return (
-      contact.id.toLowerCase().includes(query) ||
+      String(contact.id).toLowerCase().includes(query) ||
       contact.name.toLowerCase().includes(query) ||
-      contact.phone.includes(query)
+      String(contact.phone || "").includes(query)
     );
   });
 
@@ -356,6 +481,14 @@ function Events({ events, setEvents, contacts, setContacts }) {
           Create New Event
         </button>
       </div>
+
+      {/* API ERROR */}
+      {apiError && (
+        <div className="flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          <AlertCircle size={18} className="mt-0.5 shrink-0" />
+          <span>{apiError}</span>
+        </div>
+      )}
 
       {/* STATISTICS */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -531,7 +664,13 @@ function Events({ events, setEvents, contacts, setContacts }) {
           </table>
         </div>
 
-        {filteredEvents.length === 0 && (
+        {loading && (
+          <div className="px-5 py-8 text-center text-sm text-slate-500">
+            Loading events from database...
+          </div>
+        )}
+
+        {!loading && filteredEvents.length === 0 && (
           <div className="px-5 py-14 text-center">
             <CalendarDays size={35} className="mx-auto text-slate-300" />
             <p className="mt-3 font-semibold text-slate-700">

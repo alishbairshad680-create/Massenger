@@ -1,9 +1,8 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   MessageSquare,
   Smartphone,
-  Send,
   CheckCircle2,
   Clock,
   AlertCircle,
@@ -12,79 +11,144 @@ import {
   X,
   Filter,
   CalendarDays,
-  RefreshCw,
+  Trash2,
+  Plus,
 } from "lucide-react";
 
-const initialMessages = [
-  {
-    id: 1,
-    recipient: "Ahmed Ali",
-    phone: "03001234567",
-    channel: "WhatsApp",
-    campaign: "Annual Gathering Reminder",
-    message:
-      "Hello Ahmed Ali, you are invited to our Annual Community Gathering.",
-    status: "Delivered",
-    date: "2026-10-28",
-    time: "10:30 AM",
-  },
-  {
-    id: 2,
-    recipient: "Sara Khan",
-    phone: "03211234567",
-    channel: "SMS",
-    campaign: "Youth Program Invitation",
-    message:
-      "Dear Sara Khan, you are invited to our Youth Development Program.",
-    status: "Pending",
-    date: "2026-10-31",
-    time: "02:30 PM",
-  },
-  {
-    id: 3,
-    recipient: "Usman Malik",
-    phone: "03331234567",
-    channel: "WhatsApp",
-    campaign: "Community Update",
-    message:
-      "Hello Usman Malik, here is an important community update.",
-    status: "Failed",
-    date: "2026-10-27",
-    time: "11:15 AM",
-  },
-  {
-    id: 4,
-    recipient: "Ayesha Ahmed",
-    phone: "03011234567",
-    channel: "SMS",
-    campaign: "Annual Gathering Reminder",
-    message:
-      "Hello Ayesha Ahmed, we are excited to invite you to our annual gathering!",
-    status: "Delivered",
-    date: "2026-10-28",
-    time: "10:35 AM",
-  },
-  {
-    id: 5,
-    recipient: "Hassan Raza",
-    phone: "03121234567",
-    channel: "WhatsApp",
-    campaign: "Annual Gathering Reminder",
-    message:
-      "Hello Hassan Raza, you are invited to our Annual Community Gathering.",
-    status: "Delivered",
-    date: "2026-10-28",
-    time: "10:40 AM",
-  },
-];
+import { getMessages, createMessage, deleteMessage } from "../services/api";
 
 function Messages() {
-  const [messages] = useState(initialMessages);
+  const [messages, setMessages] = useState([]);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [channelFilter, setChannelFilter] = useState("All");
   const [selectedMessage, setSelectedMessage] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
+  const [showForm, setShowForm] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const [formData, setFormData] = useState({
+    recipient: "",
+    phone: "",
+    channel: "SMS",
+    campaign: "",
+    message: "",
+  });
+
+  // FORMAT DATABASE MESSAGES
+  const formatMessages = (records) => {
+    return records.map((item) => ({
+      id: item._id,
+      recipient: item.recipient || "",
+      phone: item.phone || "",
+      channel: item.channel || "",
+      campaign: item.campaign || item.campaignId?.name || "",
+      message: item.message || "",
+      status: item.status || "Pending",
+      date: item.sentAt || item.createdAt || new Date(),
+    }));
+  };
+
+  // LOAD MESSAGES FROM MONGODB
+  const loadMessages = async () => {
+    try {
+      setLoading(true);
+      setError("");
+
+      const response = await getMessages();
+
+      const records = response.messages || [];
+
+      setMessages(formatMessages(records));
+    } catch (err) {
+      console.error("Error loading messages:", err);
+      setError(err.message || "Unable to load messages.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadMessages();
+  }, []);
+
+  // HANDLE FORM INPUTS
+  const handleInputChange = (e) => {
+    const { name, value } = e.target;
+
+    setFormData((previous) => ({
+      ...previous,
+      [name]: value,
+    }));
+  };
+
+  // DELETE MESSAGE RECORD
+  const handleDeleteMessage = async (id) => {
+    const confirmed = window.confirm(
+      "Are you sure you want to delete this message permanently?"
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setError("");
+
+      await deleteMessage(id);
+
+      setMessages((previous) =>
+        previous.filter((message) => message.id !== id)
+      );
+
+      if (selectedMessage?.id === id) {
+        setSelectedMessage(null);
+      }
+    } catch (err) {
+      console.error("Error deleting message:", err);
+      setError(err.message || "Could not delete message.");
+    }
+  };
+
+
+  // SAVE MESSAGE RECORD
+  const handleSaveMessage = async (e) => {
+    e.preventDefault();
+
+    if (!formData.recipient.trim() || !formData.message.trim()) {
+      setError("Recipient and message are required.");
+      return;
+    }
+
+    try {
+      setSaving(true);
+      setError("");
+
+      await createMessage({
+        ...formData,
+        status: "Pending",
+      });
+
+      await loadMessages();
+
+      setFormData({
+        recipient: "",
+        phone: "",
+        channel: "SMS",
+        campaign: "",
+        message: "",
+      });
+
+      setShowForm(false);
+    } catch (err) {
+      console.error("Error saving message:", err);
+      setError(err.message || "Could not save message.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // MESSAGE STATISTICS
   const delivered = messages.filter(
     (message) => message.status === "Delivered"
   ).length;
@@ -97,6 +161,7 @@ function Messages() {
     (message) => message.status === "Failed"
   ).length;
 
+  // SEARCH AND FILTER
   const filteredMessages = messages.filter((message) => {
     const query = search.toLowerCase();
 
@@ -114,6 +179,7 @@ function Messages() {
     return matchesSearch && matchesStatus && matchesChannel;
   });
 
+  // STATUS STYLING
   const statusStyle = (status) => {
     if (status === "Delivered") {
       return "bg-green-50 text-green-700";
@@ -138,12 +204,29 @@ function Messages() {
     return <AlertCircle size={16} />;
   };
 
-  const formatDate = (date) =>
-    new Date(date + "T00:00:00").toLocaleDateString("en-US", {
+  // DATE FORMATTING
+  const formatDate = (date) => {
+    if (!date || isNaN(new Date(date).getTime())) {
+      return "—";
+    }
+
+    return new Date(date).toLocaleDateString("en-US", {
       day: "numeric",
       month: "short",
       year: "numeric",
     });
+  };
+
+  const formatTime = (date) => {
+    if (!date || isNaN(new Date(date).getTime())) {
+      return "—";
+    }
+
+    return new Date(date).toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
 
   return (
     <div className="space-y-6 pb-8">
@@ -156,13 +239,28 @@ function Messages() {
           <span className="font-medium text-blue-600">Messages</span>
         </div>
 
-        <h1 className="text-2xl font-bold text-slate-800 sm:text-3xl">
-          Messages Management
-        </h1>
+        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-800 sm:text-3xl">
+              Messages Management
+            </h1>
 
-        <p className="mt-1 text-sm text-slate-500">
-          Monitor SMS and WhatsApp message delivery records.
-        </p>
+            <p className="mt-1 text-sm text-slate-500">
+              Monitor SMS and WhatsApp message records.
+            </p>
+          </div>
+
+          <button
+            onClick={() => {
+              setError("");
+              setShowForm(!showForm);
+            }}
+            className="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+          >
+            {showForm ? <X size={18} /> : <Plus size={18} />}
+            {showForm ? "Close Form" : "Add Message"}
+          </button>
+        </div>
       </div>
 
       {/* INFORMATION */}
@@ -174,15 +272,157 @@ function Messages() {
 
         <div>
           <p className="text-sm font-semibold text-blue-900">
-            Message Delivery Center
+            Message Records Center
           </p>
+
           <p className="mt-1 text-sm leading-6 text-blue-800">
-            Review message records, recipient details and delivery statuses.
-            Live delivery tracking will be available after SMS and WhatsApp
-            provider integration.
+            Message records are stored in the database. Actual SMS and
+            WhatsApp sending and live delivery tracking require provider
+            integration.
           </p>
         </div>
       </div>
+
+      {/* ERROR */}
+      {error && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          {error}
+        </div>
+      )}
+
+      {/* ADD MESSAGE FORM */}
+      {showForm && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+          <div className="mb-5">
+            <h2 className="text-lg font-bold text-slate-800">
+              Create Message Record
+            </h2>
+
+            <p className="mt-1 text-sm text-slate-500">
+              Save a message record in the database. This will not send
+              an actual SMS or WhatsApp message.
+            </p>
+          </div>
+
+          <form onSubmit={handleSaveMessage} className="space-y-5">
+
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+
+              {/* RECIPIENT */}
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Recipient Name *
+                </label>
+
+                <input
+                  type="text"
+                  name="recipient"
+                  value={formData.recipient}
+                  onChange={handleInputChange}
+                  placeholder="Enter recipient name"
+                  required
+                  className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-500"
+                />
+              </div>
+
+              {/* PHONE */}
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Phone Number
+                </label>
+
+                <input
+                  type="text"
+                  name="phone"
+                  value={formData.phone}
+                  onChange={handleInputChange}
+                  placeholder="Enter phone number"
+                  className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-500"
+                />
+              </div>
+
+              {/* CHANNEL */}
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Channel *
+                </label>
+
+                <select
+                  name="channel"
+                  value={formData.channel}
+                  onChange={handleInputChange}
+                  className="w-full rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm outline-none focus:border-blue-500"
+                >
+                  <option value="SMS">SMS</option>
+                  <option value="WhatsApp">WhatsApp</option>
+                </select>
+              </div>
+
+              {/* CAMPAIGN */}
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Campaign Name (Optional)
+                </label>
+
+                <input
+                  type="text"
+                  name="campaign"
+                  value={formData.campaign}
+                  onChange={handleInputChange}
+                  placeholder="Enter campaign name"
+                  className="w-full rounded-lg border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-500"
+                />
+              </div>
+
+            </div>
+
+            {/* MESSAGE */}
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">
+                Message Content *
+              </label>
+
+              <textarea
+                name="message"
+                value={formData.message}
+                onChange={handleInputChange}
+                placeholder="Write your message here..."
+                rows={5}
+                required
+                className="w-full resize-y rounded-lg border border-slate-200 px-4 py-3 text-sm outline-none focus:border-blue-500"
+              />
+            </div>
+
+            {/* STATUS */}
+            <div className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+              Status will automatically be saved as Pending.
+            </div>
+
+            {/* BUTTONS */}
+            <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowForm(false);
+                  setError("");
+                }}
+                className="rounded-lg border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="submit"
+                disabled={saving}
+                className="rounded-lg bg-blue-600 px-6 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {saving ? "Saving..." : "Save Message"}
+              </button>
+            </div>
+
+          </form>
+        </div>
+      )}
 
       {/* STATISTICS */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -225,10 +465,12 @@ function Messages() {
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-green-50 text-green-600">
               <MessageSquare size={24} />
             </div>
+
             <div>
               <h3 className="font-bold text-slate-800">
                 WhatsApp Messages
               </h3>
+
               <p className="mt-1 text-sm text-slate-500">
                 WhatsApp channel records
               </p>
@@ -245,10 +487,12 @@ function Messages() {
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-50 text-blue-600">
               <Smartphone size={24} />
             </div>
+
             <div>
               <h3 className="font-bold text-slate-800">
                 SMS Messages
               </h3>
+
               <p className="mt-1 text-sm text-slate-500">
                 SMS channel records
               </p>
@@ -271,18 +515,21 @@ function Messages() {
             <h2 className="text-lg font-bold text-slate-800">
               All Messages
             </h2>
+
             <p className="mt-1 text-sm text-slate-500">
-              Search and monitor message records.
+              Search and monitor saved message records.
             </p>
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
 
+            {/* SEARCH */}
             <div className="relative">
               <Search
                 size={17}
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
               />
+
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -291,11 +538,13 @@ function Messages() {
               />
             </div>
 
+            {/* STATUS FILTER */}
             <div className="relative">
               <Filter
                 size={16}
                 className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
               />
+
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
@@ -308,6 +557,7 @@ function Messages() {
               </select>
             </div>
 
+            {/* CHANNEL FILTER */}
             <select
               value={channelFilter}
               onChange={(e) => setChannelFilter(e.target.value)}
@@ -321,6 +571,7 @@ function Messages() {
           </div>
         </div>
 
+        {/* TABLE */}
         <div className="overflow-x-auto">
           <table className="w-full min-w-[950px] text-left text-sm">
 
@@ -344,13 +595,14 @@ function Messages() {
                     <p className="font-semibold text-slate-800">
                       {message.recipient}
                     </p>
+
                     <p className="mt-1 text-xs text-slate-500">
-                      {message.phone}
+                      {message.phone || "—"}
                     </p>
                   </td>
 
                   <td className="px-5 py-4 text-slate-600">
-                    {message.campaign}
+                    {message.campaign || "—"}
                   </td>
 
                   <td className="px-5 py-4">
@@ -360,6 +612,7 @@ function Messages() {
                       ) : (
                         <Smartphone size={17} className="text-blue-600" />
                       )}
+
                       {message.channel}
                     </span>
                   </td>
@@ -367,10 +620,12 @@ function Messages() {
                   <td className="px-5 py-4 text-slate-600">
                     <div className="flex items-center gap-2">
                       <CalendarDays size={15} className="text-slate-400" />
+
                       <span>
                         {formatDate(message.date)}
+
                         <span className="mt-1 block text-xs text-slate-400">
-                          {message.time}
+                          {formatTime(message.date)}
                         </span>
                       </span>
                     </div>
@@ -393,6 +648,15 @@ function Messages() {
                     >
                       <Eye size={18} />
                     </button>
+
+                    <button
+                      onClick={() => handleDeleteMessage(message.id)}
+                      title="Delete Message"
+                      className="rounded-lg p-2 text-red-600 hover:bg-red-50"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+
                   </td>
 
                 </tr>
@@ -402,17 +666,25 @@ function Messages() {
           </table>
         </div>
 
-        {filteredMessages.length === 0 && (
+        {loading && (
+          <div className="py-12 text-center text-sm text-slate-500">
+            Loading messages...
+          </div>
+        )}
+
+        {!loading && filteredMessages.length === 0 && (
           <div className="py-12 text-center">
             <MessageSquare
               size={32}
               className="mx-auto text-slate-300"
             />
+
             <p className="mt-3 text-sm font-semibold text-slate-600">
               No messages found
             </p>
+
             <p className="mt-1 text-xs text-slate-400">
-              Try changing your search or filters.
+              No saved records match your search or filters.
             </p>
           </div>
         )}
@@ -434,6 +706,7 @@ function Messages() {
                 <h2 className="text-lg font-bold text-slate-800">
                   Message Details
                 </h2>
+
                 <p className="mt-1 text-sm text-slate-500">
                   Message #{selectedMessage.id}
                 </p>
@@ -458,7 +731,7 @@ function Messages() {
 
                 <DetailItem
                   label="Phone Number"
-                  value={selectedMessage.phone}
+                  value={selectedMessage.phone || "—"}
                 />
 
                 <DetailItem
@@ -468,7 +741,7 @@ function Messages() {
 
                 <DetailItem
                   label="Campaign"
-                  value={selectedMessage.campaign}
+                  value={selectedMessage.campaign || "—"}
                 />
 
                 <DetailItem
@@ -478,7 +751,7 @@ function Messages() {
 
                 <DetailItem
                   label="Time"
-                  value={selectedMessage.time}
+                  value={formatTime(selectedMessage.date)}
                 />
 
               </div>
@@ -500,14 +773,16 @@ function Messages() {
                 <p className="mb-2 text-xs font-semibold uppercase text-slate-400">
                   Message Content
                 </p>
+
                 <p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
                   {selectedMessage.message}
                 </p>
               </div>
 
               <div className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                This is sample message history. Actual delivery status
-                requires a connected messaging provider.
+                Actual SMS and WhatsApp delivery requires a connected
+                messaging provider. A Pending record does not mean a
+                message has been delivered.
               </div>
 
               <button
@@ -553,6 +828,7 @@ function DetailItem({ label, value }) {
   return (
     <div className="rounded-lg bg-slate-50 p-3">
       <p className="text-xs text-slate-400">{label}</p>
+
       <p className="mt-1 break-words text-sm font-semibold text-slate-800">
         {value}
       </p>

@@ -1,5 +1,5 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Send,
   MessageSquare,
@@ -7,7 +7,6 @@ import {
   Users,
   CalendarDays,
   Plus,
-  Search,
   X,
   Eye,
   Clock,
@@ -20,38 +19,12 @@ import {
   Trash2,
 } from "lucide-react";
 
-const initialCampaigns = [
-  {
-    id: 1,
-    name: "Annual Gathering Reminder",
-    event: "Annual Community Gathering",
-    channel: "WhatsApp",
-    recipients: 250,
-    status: "Sent",
-    date: "2026-10-28",
-    message: "Hello {name}, we are excited to invite you to our annual gathering!",
-  },
-  {
-    id: 2,
-    name: "Youth Program Invitation",
-    event: "Youth Development Program",
-    channel: "SMS",
-    recipients: 120,
-    status: "Scheduled",
-    date: "2026-11-10",
-    message: "Dear {name}, you are invited to our Youth Development Program.",
-  },
-  {
-    id: 3,
-    name: "Community Update",
-    event: "Community Awareness Session",
-    channel: "Both",
-    recipients: 85,
-    status: "Draft",
-    date: "2026-10-20",
-    message: "Hello {name}, here is an important community update.",
-  },
-];
+import {
+  getCampaigns,
+  createCampaign,
+  updateCampaign,
+  deleteCampaign as deleteCampaignAPI,
+} from "../services/api";
 
 const emptyForm = {
   name: "",
@@ -63,44 +36,75 @@ const emptyForm = {
   scheduledTime: "",
 };
 
-function Campaigns({ events = [], contacts = [] }) {
-  const [campaigns, setCampaigns] = useState(initialCampaigns);
+function Campaigns({ events = [] }) {
+  const [campaigns, setCampaigns] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState(null);
   const [viewCampaign, setViewCampaign] = useState(null);
 
   const [form, setForm] = useState(emptyForm);
-  const [contactSearch, setContactSearch] = useState("");
-  const [selectedContacts, setSelectedContacts] = useState([]);
-  const [showContactPicker, setShowContactPicker] = useState(false);
   const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
 
-  const selectedEvent = events.find(
-    (event) => String(event.id) === String(form.eventId)
-  );
+  // Convert MongoDB campaign into frontend format
+  const formatCampaign = (item) => {
+    const eventName =
+      typeof item.eventId === "object"
+        ? item.eventId?.name
+        : item.eventName;
 
-  const eventParticipants = selectedEvent
-    ? contacts.filter((contact) =>
-        (selectedEvent.participantIds || []).includes(contact.id)
-      )
-    : [];
+    const eventId =
+      typeof item.eventId === "object"
+        ? item.eventId?._id
+        : item.eventId;
 
-  const recipients =
-    form.audience === "selected"
-      ? eventParticipants.filter((contact) =>
-          selectedContacts.includes(contact.id)
-        )
-      : eventParticipants;
+    return {
+      id: item._id,
+      name: item.name,
+      event: eventName || item.eventName || "Event unavailable",
+      eventId: eventId || "",
+      channel: item.channel,
+      recipients: item.recipients || 0,
+      selectedContacts: (item.selectedContacts || []).map(
+        (contact) =>
+          typeof contact === "object" ? contact._id : contact
+      ),
+      audience: item.audience || "all",
+      status: item.status,
+      date:
+        item.scheduledDate ||
+        (item.createdAt
+          ? item.createdAt.substring(0, 10)
+          : ""),
+      scheduledDate: item.scheduledDate || "",
+      scheduledTime: item.scheduledTime || "",
+      message: item.message,
+    };
+  };
 
-  const filteredContacts = eventParticipants.filter((contact) => {
-    const query = contactSearch.toLowerCase();
+  // Load campaigns from MongoDB
+  const loadCampaigns = async () => {
+    try {
+      setLoading(true);
+      setError("");
 
-    return (
-      contact.name.toLowerCase().includes(query) ||
-      contact.id.toLowerCase().includes(query) ||
-      contact.phone.includes(query)
-    );
-  });
+      const response = await getCampaigns();
+
+      setCampaigns(
+        (response.campaigns || []).map(formatCampaign)
+      );
+    } catch (err) {
+      setError(err.message || "Could not load campaigns.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadCampaigns();
+  }, []);
 
   const sentCount = campaigns.filter(
     (campaign) => campaign.status === "Sent"
@@ -121,10 +125,8 @@ function Campaigns({ events = [], contacts = [] }) {
 
   const openCreateModal = () => {
     setForm(emptyForm);
-    setSelectedContacts([]);
     setSelectedCampaign(null);
     setNotice("");
-    setShowContactPicker(false);
     setShowModal(true);
   };
 
@@ -141,39 +143,24 @@ function Campaigns({ events = [], contacts = [] }) {
       scheduledTime: campaign.scheduledTime || "",
     });
 
-    setSelectedContacts(campaign.selectedContacts || []);
     setNotice("");
     setShowModal(true);
   };
 
-  const toggleContact = (id) => {
-    setSelectedContacts((previous) =>
-      previous.includes(id)
-        ? previous.filter((item) => item !== id)
-        : [...previous, id]
-    );
-  };
+  const selectedEvent = events.find(
+    (event) => String(event._id || event.id) === String(form.eventId)
+  );
 
-  const handleEventChange = (eventId) => {
-    setForm((previous) => ({
-      ...previous,
-      eventId,
-    }));
-
-    setSelectedContacts([]);
-    setContactSearch("");
-  };
-
-  const saveCampaign = (e, status) => {
+  // Save campaign to MongoDB
+  const saveCampaign = async (e, status) => {
     e.preventDefault();
 
-    if (!form.name.trim() || !form.eventId || !form.message.trim()) {
+    if (
+      !form.name.trim() ||
+      !form.eventId ||
+      !form.message.trim()
+    ) {
       setNotice("Please complete the required fields.");
-      return;
-    }
-
-    if (recipients.length === 0) {
-      setNotice("Please select at least one registered participant.");
       return;
     }
 
@@ -181,50 +168,56 @@ function Campaigns({ events = [], contacts = [] }) {
       status === "Scheduled" &&
       (!form.scheduledDate || !form.scheduledTime)
     ) {
-      setNotice("Please select a schedule date and time.");
+      setNotice("Please select both schedule date and time.");
       return;
     }
 
-    const campaign = {
-      id: selectedCampaign?.id || Date.now(),
+    const campaignData = {
       name: form.name.trim(),
-      event: selectedEvent.name,
       eventId: form.eventId,
       channel: form.channel,
-      recipients: recipients.length,
-      selectedContacts: selectedContacts,
       audience: form.audience,
+      selectedContacts: [],
+      message: form.message.trim(),
       status,
-      date:
-        status === "Scheduled"
-          ? form.scheduledDate
-          : new Date().toISOString().split("T")[0],
       scheduledDate: form.scheduledDate,
       scheduledTime: form.scheduledTime,
-      message: form.message,
     };
 
-    if (selectedCampaign) {
-      setCampaigns((previous) =>
-        previous.map((item) =>
-          item.id === selectedCampaign.id ? campaign : item
-        )
-      );
-    } else {
-      setCampaigns((previous) => [campaign, ...previous]);
-    }
+    try {
+      setSaving(true);
+      setNotice("");
 
-    setShowModal(false);
-    setForm(emptyForm);
-    setSelectedCampaign(null);
-    setNotice("");
+      if (selectedCampaign) {
+        await updateCampaign(selectedCampaign.id, campaignData);
+      } else {
+        await createCampaign(campaignData);
+      }
+
+      await loadCampaigns();
+
+      setShowModal(false);
+      setForm(emptyForm);
+      setSelectedCampaign(null);
+      setNotice("");
+    } catch (err) {
+      setNotice(err.message || "Could not save campaign.");
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const deleteCampaign = (id) => {
-    if (window.confirm("Delete this campaign?")) {
-      setCampaigns((previous) =>
-        previous.filter((campaign) => campaign.id !== id)
-      );
+  // Delete campaign from MongoDB
+  const deleteCampaign = async (id) => {
+    if (!window.confirm("Delete this campaign?")) {
+      return;
+    }
+
+    try {
+      await deleteCampaignAPI(id);
+      await loadCampaigns();
+    } catch (err) {
+      setError(err.message || "Could not delete campaign.");
     }
   };
 
@@ -248,12 +241,7 @@ function Campaigns({ events = [], contacts = [] }) {
   };
 
   const previewMessage = (message) => {
-    const firstContact = recipients[0];
-
-    return message.replace(
-      /\{name\}/gi,
-      firstContact?.name || "Participant"
-    );
+    return message.replace(/\{name\}/gi, "Participant");
   };
 
   return (
@@ -294,12 +282,19 @@ function Campaigns({ events = [], contacts = [] }) {
             Smart Event-Based Messaging
           </p>
           <p className="mt-1 text-sm leading-6 text-blue-800">
-            Select an event and send personalized messages to its registered
-            participants. Actual SMS and WhatsApp delivery will be enabled
-            after provider integration.
+            Create and save campaign drafts for your events.
+            Actual attendee selection and SMS/WhatsApp delivery
+            will be connected in later development steps.
           </p>
         </div>
       </div>
+
+      {/* ERROR */}
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
 
       {/* STATISTICS */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -403,7 +398,7 @@ function Campaigns({ events = [], contacts = [] }) {
                       {campaign.name}
                     </p>
                     <p className="mt-1 text-xs text-slate-400">
-                      Campaign #{campaign.id}
+                      Campaign #{String(campaign.id).slice(-6)}
                     </p>
                   </td>
 
@@ -464,7 +459,13 @@ function Campaigns({ events = [], contacts = [] }) {
           </table>
         </div>
 
-        {campaigns.length === 0 && (
+        {loading && (
+          <div className="py-12 text-center text-sm text-slate-500">
+            Loading campaigns...
+          </div>
+        )}
+
+        {!loading && campaigns.length === 0 && (
           <div className="py-12 text-center text-sm text-slate-400">
             No campaigns created yet.
           </div>
@@ -498,7 +499,13 @@ function Campaigns({ events = [], contacts = [] }) {
               </button>
             </div>
 
-            <form className="space-y-5 p-5">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                saveCampaign(e, "Draft");
+              }}
+              className="space-y-5 p-5"
+            >
 
               {/* CAMPAIGN NAME */}
               <div>
@@ -506,6 +513,7 @@ function Campaigns({ events = [], contacts = [] }) {
                   Campaign Name *
                 </label>
                 <input
+                  required
                   value={form.name}
                   onChange={(e) =>
                     setForm({ ...form, name: e.target.value })
@@ -526,13 +534,16 @@ function Campaigns({ events = [], contacts = [] }) {
                     className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
                   />
                   <select
+                    required
                     value={form.eventId}
-                    onChange={(e) => handleEventChange(e.target.value)}
+                    onChange={(e) =>
+                      setForm({ ...form, eventId: e.target.value })
+                    }
                     className="w-full appearance-none rounded-lg border border-slate-200 bg-white py-3 pl-10 pr-9 text-sm outline-none focus:border-blue-500"
                   >
                     <option value="">Choose an event</option>
                     {events.map((event) => (
-                      <option key={event.id} value={event.id}>
+                      <option key={event._id || event.id} value={event._id || event.id}>
                         {event.name}
                       </option>
                     ))}
@@ -543,9 +554,9 @@ function Campaigns({ events = [], contacts = [] }) {
                   />
                 </div>
 
-                {form.eventId && (
+                {form.eventId && selectedEvent && (
                   <p className="mt-2 text-xs text-blue-600">
-                    {eventParticipants.length} registered contacts available for this event.
+                    Selected event: {selectedEvent.name}
                   </p>
                 )}
               </div>
@@ -574,129 +585,24 @@ function Campaigns({ events = [], contacts = [] }) {
                 </div>
               </div>
 
-              {/* AUDIENCE */}
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">
-                  Recipients
-                </label>
-
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setForm({ ...form, audience: "all" });
-                      setSelectedContacts([]);
-                    }}
-                    className={`rounded-xl border p-4 text-left ${
-                      form.audience === "all"
-                        ? "border-blue-500 bg-blue-50"
-                        : "border-slate-200"
-                    }`}
-                  >
-                    <Users
-                      size={20}
-                      className="mb-2 text-blue-600"
-                    />
-                    <p className="text-sm font-semibold text-slate-800">
-                      All Participants
+              {/* RECIPIENTS */}
+              <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                <div className="flex items-start gap-3">
+                  <Users size={21} className="mt-0.5 text-amber-700" />
+                  <div>
+                    <p className="text-sm font-semibold text-amber-900">
+                      Attendance-based recipients are coming later
                     </p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Message everyone registered for this event.
+                    <p className="mt-1 text-sm leading-6 text-amber-800">
+                      Campaigns will target people whose attendance has
+                      actually been recorded. For now, you can save your
+                      campaign without selecting recipients.
                     </p>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setForm({ ...form, audience: "selected" })
-                    }
-                    className={`rounded-xl border p-4 text-left ${
-                      form.audience === "selected"
-                        ? "border-blue-500 bg-blue-50"
-                        : "border-slate-200"
-                    }`}
-                  >
-                    <UserIcon />
-                    <p className="text-sm font-semibold text-slate-800">
-                      Selected Contacts
+                    <p className="mt-2 text-xs font-semibold text-amber-900">
+                      Current recipients: 0
                     </p>
-                    <p className="mt-1 text-xs text-slate-500">
-                      Choose specific participants.
-                    </p>
-                  </button>
-                </div>
-
-                {form.audience === "selected" && (
-                  <div className="mt-3">
-                    <button
-                      type="button"
-                      disabled={!selectedEvent}
-                      onClick={() =>
-                        setShowContactPicker(!showContactPicker)
-                      }
-                      className="flex w-full items-center justify-between rounded-lg border border-slate-200 p-3 text-sm text-slate-700 disabled:opacity-50"
-                    >
-                      <span>
-                        {selectedContacts.length} contacts selected
-                      </span>
-                      <ChevronDown size={17} />
-                    </button>
-
-                    {showContactPicker && (
-                      <div className="mt-2 rounded-xl border border-slate-200 p-3">
-                        <div className="relative mb-3">
-                          <Search
-                            size={16}
-                            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                          />
-                          <input
-                            value={contactSearch}
-                            onChange={(e) =>
-                              setContactSearch(e.target.value)
-                            }
-                            placeholder="Search participants..."
-                            className="w-full rounded-lg border border-slate-200 py-2 pl-9 pr-3 text-sm outline-none focus:border-blue-500"
-                          />
-                        </div>
-
-                        <div className="max-h-40 space-y-2 overflow-y-auto">
-                          {filteredContacts.map((contact) => (
-                            <label
-                              key={contact.id}
-                              className="flex cursor-pointer items-center justify-between gap-3 rounded-lg p-2 hover:bg-slate-50"
-                            >
-                              <div>
-                                <p className="text-sm font-medium text-slate-800">
-                                  {contact.name}
-                                </p>
-                                <p className="text-xs text-slate-500">
-                                  #{contact.id} · {contact.phone}
-                                </p>
-                              </div>
-
-                              <input
-                                type="checkbox"
-                                checked={selectedContacts.includes(contact.id)}
-                                onChange={() => toggleContact(contact.id)}
-                                className="h-4 w-4 accent-blue-600"
-                              />
-                            </label>
-                          ))}
-
-                          {filteredContacts.length === 0 && (
-                            <p className="py-4 text-center text-xs text-slate-400">
-                              No participants found. Select an event first.
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    )}
                   </div>
-                )}
-
-                <p className="mt-2 text-xs text-slate-500">
-                  Recipients: <strong>{recipients.length}</strong>
-                </p>
+                </div>
               </div>
 
               {/* MESSAGE */}
@@ -711,6 +617,7 @@ function Campaigns({ events = [], contacts = [] }) {
                 </div>
 
                 <textarea
+                  required
                   rows="5"
                   value={form.message}
                   onChange={(e) =>
@@ -798,25 +705,29 @@ function Campaigns({ events = [], contacts = [] }) {
               <div className="flex flex-col-reverse gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:justify-end">
                 <button
                   type="button"
-                  onClick={() => saveCampaign(
-                    { preventDefault: () => {} },
-                    "Draft"
-                  )}
-                  className="rounded-lg border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                  disabled={saving}
+                  onClick={(e) => saveCampaign(e, "Draft")}
+                  className="rounded-lg border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                 >
                   Save Draft
                 </button>
 
                 <button
                   type="button"
-                  onClick={() => saveCampaign(
-                    { preventDefault: () => {} },
-                    form.scheduledDate ? "Scheduled" : "Draft"
-                  )}
-                  className="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700"
+                  disabled={saving}
+                  onClick={(e) => {
+                    if (form.scheduledDate && form.scheduledTime) {
+                      saveCampaign(e, "Scheduled");
+                    } else if (form.scheduledDate || form.scheduledTime) {
+                      setNotice("Please select both schedule date and time.");
+                    } else {
+                      saveCampaign(e, "Draft");
+                    }
+                  }}
+                  className="flex items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
                 >
                   <Send size={17} />
-                  Save Campaign
+                  {saving ? "Saving..." : "Save Campaign"}
                 </button>
               </div>
 
@@ -892,14 +803,6 @@ function Campaigns({ events = [], contacts = [] }) {
   );
 }
 
-function UserIcon() {
-  return (
-    <div className="mb-2 text-blue-600">
-      <Users size={20} />
-    </div>
-  );
-}
-
 function StatCard({ title, value, icon, color }) {
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -918,3 +821,4 @@ function StatCard({ title, value, icon, color }) {
 }
 
 export default Campaigns;
+

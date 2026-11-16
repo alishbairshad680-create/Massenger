@@ -51,6 +51,7 @@ const getContacts = async (req, res) => {
       contacts,
     });
   } catch (error) {
+    console.error("FETCH CONTACTS ERROR:", error);
     res.status(500).json({
       success: false,
       message: "Server error while fetching contacts.",
